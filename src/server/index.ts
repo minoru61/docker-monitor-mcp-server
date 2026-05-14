@@ -84,7 +84,7 @@ app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }),
         const token = jwt.sign(
             { email: `${clientId}@m2m.local`, issuer: clientId },
             JWT_SECRET,
-            { expiresIn: '1h' } // Token expires in 1 hour
+            { expiresIn: '1y' } // Token expires in 1 year
         );
 
         return res.json({
