@@ -2,8 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import { randomUUID } from 'crypto';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import server from './mcp.js';
+import { createMcpServer } from './mcp.js';
 
 // Load from local .env files
 dotenv.config({ path: ['development.env', '.env.local', '.env'] });
@@ -12,6 +13,16 @@ const app = express();
 const PORT = process.env.PORT || 8081;
 const JWT_SECRET = process.env.JWT_SECRET || 'default_secret_for_development';
 
+// Parse scopes from environment
+let clientScopes: Record<string, { secret: string, tools: string[] }> = {};
+try {
+    if (process.env.MCP_CLIENT_SCOPES) {
+        clientScopes = JSON.parse(process.env.MCP_CLIENT_SCOPES);
+    }
+} catch (e) {
+    console.error("[OAuth] Failed to parse MCP_CLIENT_SCOPES JSON", e);
+}
+
 // CORS configuration
 app.use(cors({
     origin: true,
@@ -19,26 +30,20 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 
-// --- MCP Server Endpoints ---
-let mcpTransport: SSEServerTransport | null = null;
+const transports = new Map<string, SSEServerTransport>();
 
 const authorizeMcp = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     let token: string | null = null;
-
-    // 1. Check Authorization header
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.startsWith('Bearer ')) {
         token = authHeader.split(' ')[1];
     } else if (req.query.token) {
-        // 2. Check query params
         token = req.query.token as string;
     } else if (req.query.access_token) {
         token = req.query.access_token as string;
     }
 
-    if (!token) {
-        return res.status(401).json({ error: 'Unauthorized: Missing or invalid Bearer token' });
-    }
+    if (!token) return res.status(401).json({ error: 'Unauthorized: Missing or invalid Bearer token' });
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
@@ -55,7 +60,6 @@ app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }),
     let clientId = req.body.client_id || req.query.client_id;
     let clientSecret = req.body.client_secret || req.query.client_secret;
 
-    // Support Basic Auth Header
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.startsWith('Basic ')) {
         try {
@@ -68,30 +72,26 @@ app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }),
         }
     }
 
-    // AppRunner Monitor 仕様に合わせた簡易認証：環境変数に定義されたIDとSecretと一致するか確認
-    const validClientId = process.env.MCP_CLIENT_ID || 'test-client-id';
-    const validClientSecret = process.env.MCP_CLIENT_SECRET || 'test-client-secret';
-
     if (grantType !== 'client_credentials') {
         return res.status(400).json({ error: 'unsupported_grant_type' });
     }
 
-    if (!clientId || clientId !== validClientId || !clientSecret || clientSecret !== validClientSecret) {
+    if (!clientId || !clientScopes[clientId] || clientSecret !== clientScopes[clientId].secret) {
         return res.status(401).json({ error: 'invalid_client' });
     }
 
     try {
         const token = jwt.sign(
-            { email: `${clientId}@m2m.local`, issuer: clientId },
+            { 
+                email: `${clientId}@m2m.local`, 
+                issuer: clientId,
+                allowedTools: clientScopes[clientId].tools
+            },
             JWT_SECRET,
-            { expiresIn: '1y' } // Token expires in 1 year
+            { expiresIn: '1y' }
         );
 
-        return res.json({
-            access_token: token,
-            token_type: 'Bearer',
-            expires_in: 3600
-        });
+        return res.json({ access_token: token, token_type: 'Bearer', expires_in: 31536000 });
     } catch (error) {
         console.error('[OAuth] Error generating token:', error);
         return res.status(500).json({ error: 'internal_server_error' });
@@ -100,20 +100,35 @@ app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }),
 
 // GET /mcp (SSE Transport Initialization)
 app.get('/mcp', authorizeMcp, async (req: express.Request, res: express.Response) => {
-    console.log(`[MCP] Establishing SSE connection for client: ${(req as any).mcpClient.issuer}`);
-    mcpTransport = new SSEServerTransport("/mcp/messages", res);
-    await server.connect(mcpTransport);
+    const client = (req as any).mcpClient;
+    console.log(`[MCP] Establishing SSE connection for client: ${client.issuer}`);
+    
+    const sessionId = randomUUID();
+    const transport = new SSEServerTransport(`/mcp/messages?sessionId=${sessionId}`, res);
+    transports.set(sessionId, transport);
+
+    // Build specific server for this client's scope
+    const scopedServer = createMcpServer(client.allowedTools || []);
+    await scopedServer.connect(transport);
+
+    res.on('close', () => {
+        transports.delete(sessionId);
+    });
 });
 
 // POST /mcp/messages (Receive commands from client)
 app.post('/mcp/messages', authorizeMcp, express.json(), async (req: express.Request, res: express.Response) => {
-    if (!mcpTransport) {
-        return res.status(400).json({ error: 'SSE session not initialized. Call GET /mcp first.' });
+    const sessionId = req.query.sessionId as string;
+    if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
+
+    const transport = transports.get(sessionId);
+    if (!transport) {
+        return res.status(400).json({ error: 'SSE session not found or disconnected.' });
     }
-    await mcpTransport.handlePostMessage(req, res, req.body);
+    
+    await transport.handlePostMessage(req, res, req.body);
 });
 
-// Basic health check
 app.get('/health', (req, res) => {
     res.json({ status: 'healthy', service: 'docker-monitor-mcp-server' });
 });
