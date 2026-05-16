@@ -103,8 +103,8 @@ app.get('/mcp', authorizeMcp, async (req: express.Request, res: express.Response
     const client = (req as any).mcpClient;
     console.log(`[MCP] Establishing SSE connection for client: ${client.issuer}`);
     
-    const sessionId = randomUUID();
-    const transport = new SSEServerTransport(`/mcp/messages?sessionId=${sessionId}`, res);
+    const transport = new SSEServerTransport(`/mcp/messages`, res);
+    const sessionId = transport.sessionId;
     transports.set(sessionId, transport);
 
     // Build specific server for this client's scope
@@ -120,6 +120,8 @@ app.get('/mcp', authorizeMcp, async (req: express.Request, res: express.Response
 app.post('/mcp/messages', authorizeMcp, express.json(), async (req: express.Request, res: express.Response) => {
     const sessionId = req.query.sessionId as string;
     if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
+
+    console.log(`[MCP] POST /messages looking for session ${sessionId}, available sessions: ${Array.from(transports.keys()).join(", ")}`);
 
     const transport = transports.get(sessionId);
     if (!transport) {
