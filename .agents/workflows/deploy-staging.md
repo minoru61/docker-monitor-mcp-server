@@ -16,7 +16,7 @@ scp -i ~/.ssh/id_ed25519_vps docker-monitor-mcp-server-staging.tar development.e
 
 4. ステージングサーバーで古いコンテナを削除し、新しいイメージで起動します
 ```bash
-ssh -i ~/.ssh/id_ed25519_vps debian@133.167.105.49 "docker load -i ~/docker-monitor-mcp-server-staging.tar && docker rm -f docker-monitor-mcp || true && docker run -d --name docker-monitor-mcp -p 8081:8081 --env-file ~/development.env -v /var/run/docker.sock:/var/run/docker.sock docker-monitor-mcp-server:staging"
+ssh -i ~/.ssh/id_ed25519_vps debian@133.167.105.49 "docker load -i ~/docker-monitor-mcp-server-staging.tar && docker rm -f docker-monitor-mcp || true && docker run -d --name docker-monitor-mcp --network macosui_default -p 8081:8081 --env-file ~/development.env -v /var/run/docker.sock:/var/run/docker.sock docker-monitor-mcp-server:staging"
 ```
 
 5. 最後に、ステージングサーバー上でコンテナが立ち上がっているか確認します
