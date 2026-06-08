@@ -46,16 +46,15 @@ async function getAccessToken(): Promise<string> {
     return data.access_token;
 }
 
-// Convert MCP tool schema to Gemini tool schema
+// Convert MCP tool schema to Gemini tool schema (Interactions API format)
 function mcpToolToGeminiTool(mcpTool: any) {
     const properties: Record<string, any> = {};
     const required: string[] = [];
 
     if (mcpTool.inputSchema && mcpTool.inputSchema.properties) {
         for (const [key, value] of Object.entries<any>(mcpTool.inputSchema.properties)) {
-            // Need to map to Gemini's uppercase Types but 'any' bypasses it in ts-nocheck
             properties[key] = {
-                type: value.type === 'integer' ? 'INTEGER' : value.type === 'number' ? 'NUMBER' : value.type === 'boolean' ? 'BOOLEAN' : 'STRING',
+                type: value.type === 'integer' ? 'number' : value.type === 'number' ? 'number' : value.type === 'boolean' ? 'boolean' : 'string',
                 description: value.description || '',
             };
         }
@@ -66,10 +65,11 @@ function mcpToolToGeminiTool(mcpTool: any) {
     }
 
     return {
+        type: 'function',
         name: mcpTool.name,
         description: mcpTool.description,
         parameters: {
-            type: "OBJECT",
+            type: "object",
             properties,
             required: required.length > 0 ? required : undefined,
         }
@@ -110,61 +110,68 @@ async function main() {
 
     const geminiFunctionDeclarations = mcpTools.map(mcpToolToGeminiTool);
 
-    console.log("4. Sending prompt to Gemini with CustomTools model...");
+    console.log("4. Sending prompt to Gemini with Interactions API...");
     const prompt = "ローカルのDockerで稼働しているコンテナの一覧を教えてください。";
     console.log(`   Prompt: "${prompt}"`);
 
-    const chat = ai.chats.create({
-        model: "gemini-3.1-pro-preview-customtools",
-        config: {
-            tools: [{ functionDeclarations: geminiFunctionDeclarations }],
-        }
-    });
-
     try {
-        const response = await chat.sendMessage({ message: prompt });
-        let currentResponse = response;
+        let interaction = await ai.interactions.create({
+            model: "gemini-3.5-flash",
+            input: prompt,
+            tools: geminiFunctionDeclarations,
+        });
 
-        while (currentResponse.functionCalls && currentResponse.functionCalls.length > 0) {
-            const functionResponses = [];
-            
-            for (const call of currentResponse.functionCalls) {
-                console.log(`\n   [Gemini requested tool call: ${call.name}]`);
-                console.log(`     Args:`, call.args);
-                
-                try {
-                    const result = await mcpClient.callTool({
-                        name: call.name,
-                        arguments: call.args as Record<string, unknown>
-                    });
+        // Continue interacting as long as there are function calls
+        let hasFunctionCalls = true;
+        while (hasFunctionCalls && interaction.outputs) {
+            hasFunctionCalls = false;
+            const functionResults = [];
+
+            for (const output of interaction.outputs) {
+                if (output.type === 'function_call') {
+                    hasFunctionCalls = true;
+                    console.log(`\n   [Gemini requested tool call: ${output.name}]`);
+                    console.log(`     Args:`, output.arguments);
                     
-                    console.log(`   [Tool call successful]`);
-                    
-                    const textContent = (result.content as any[]).map(c => c.type === 'text' ? c.text : '').join('\n');
-                    
-                    functionResponses.push({
-                        functionResponse: {
-                            name: call.name,
-                            response: { result: textContent }
-                        }
-                    });
-                } catch (err: any) {
-                    console.error(`   [Tool call failed: ${err.message}]`);
-                    functionResponses.push({
-                        functionResponse: {
-                            name: call.name,
-                            response: { error: err.message }
-                        }
-                    });
+                    try {
+                        const result = await mcpClient.callTool({
+                            name: output.name,
+                            arguments: output.arguments as Record<string, unknown>
+                        });
+                        
+                        console.log(`   [Tool call successful]`);
+                        const textContent = (result.content as any[]).map(c => c.type === 'text' ? c.text : '').join('\n');
+                        
+                        functionResults.push({
+                            type: 'function_result',
+                            name: output.name,
+                            call_id: output.id,
+                            result: textContent
+                        });
+                    } catch (err: any) {
+                        console.error(`   [Tool call failed: ${err.message}]`);
+                        functionResults.push({
+                            type: 'function_result',
+                            name: output.name,
+                            call_id: output.id,
+                            result: { error: err.message }
+                        });
+                    }
+                } else if (output.type === 'text') {
+                    console.log("\n=== Final Response from Gemini ===\n");
+                    console.log(output.text);
                 }
             }
 
-            console.log("\n5. Sending tool results back to Gemini...");
-            currentResponse = await chat.sendMessage({ message: functionResponses });
+            if (hasFunctionCalls && functionResults.length > 0) {
+                console.log("\n5. Sending tool results back to Gemini (using previous_interaction_id)...");
+                interaction = await ai.interactions.create({
+                    model: "gemini-3.5-flash",
+                    previous_interaction_id: interaction.id,
+                    input: functionResults as any
+                });
+            }
         }
-
-        console.log("\n=== Final Response from Gemini ===\n");
-        console.log(currentResponse.text);
 
     } catch (e: any) {
         console.error("Error during Gemini interaction:", e);
