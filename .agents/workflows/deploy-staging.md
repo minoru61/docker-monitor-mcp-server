@@ -1,5 +1,10 @@
 // turbo-all
-1. さくらVPS用のアーキテクチャ(linux/amd64)でDockerイメージをビルドします
+1. まず、依存パッケージの致命的な脆弱性チェックを行います
+```bash
+npm audit --audit-level=critical
+```
+
+2. さくらVPS用のアーキテクチャ(linux/amd64)でDockerイメージをビルドします
 ```bash
 docker buildx build --platform linux/amd64 -t docker-monitor-mcp-server:staging --load .
 ```
@@ -19,7 +24,7 @@ scp -i ~/.ssh/id_ed25519_vps docker-monitor-mcp-server-staging.tar development.e
 ssh -i ~/.ssh/id_ed25519_vps debian@133.167.105.49 "docker load -i ~/docker-monitor-mcp-server-staging.tar && docker rm -f docker-monitor-mcp || true && docker run -d --name docker-monitor-mcp --network macosui_default -p 8081:8081 --env-file ~/development.env -v /var/run/docker.sock:/var/run/docker.sock docker-monitor-mcp-server:staging"
 ```
 
-5. 最後に、ステージングサーバー上でコンテナが立ち上がっているか確認します
+6. 最後に、ステージングサーバー上でコンテナが立ち上がっているか、またヘルスチェック（起動確認）を行います
 ```bash
-ssh -i ~/.ssh/id_ed25519_vps debian@133.167.105.49 "docker ps | grep docker-monitor-mcp"
+ssh -i ~/.ssh/id_ed25519_vps debian@133.167.105.49 "docker ps | grep docker-monitor-mcp && sleep 3 && curl -sSf http://localhost:8081/mcp || echo 'MCP Server is not responding yet!'"
 ```
