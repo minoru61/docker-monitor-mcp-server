@@ -56,9 +56,10 @@ const authorizeMcp = (req: express.Request, res: express.Response, next: express
 
 // --- OAuth 2.0 Token Endpoint (Client Credentials Flow) ---
 app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }), (req: express.Request, res: express.Response) => {
-    let grantType = req.body.grant_type || req.query.grant_type;
-    let clientId = req.body.client_id || req.query.client_id;
-    let clientSecret = req.body.client_secret || req.query.client_secret;
+    const body = req.body || {};
+    let grantType = body.grant_type || req.query.grant_type;
+    let clientId = body.client_id || req.query.client_id;
+    let clientSecret = body.client_secret || req.query.client_secret;
 
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.startsWith('Basic ')) {
@@ -103,7 +104,8 @@ app.get('/mcp', authorizeMcp, async (req: express.Request, res: express.Response
     const client = (req as any).mcpClient;
     console.log(`[MCP] Establishing SSE connection for client: ${client.issuer}`);
     
-    const transport = new SSEServerTransport(`/mcp/messages`, res);
+    const pathPrefix = process.env.PATH_PREFIX || '';
+    const transport = new SSEServerTransport(`${pathPrefix}/mcp/messages`, res);
     const sessionId = transport.sessionId;
     transports.set(sessionId, transport);
 
